@@ -28,9 +28,26 @@ type VWAP struct {
 	Time   time.Time
 	Value  float64
 	Volume float64
+	Count  float64
 }
 
 type VWAPS []VWAP
+
+func (v VWAPS) Add(t time.Time, price, volume float64) VWAPS {
+	prev := len(v) - 1
+	if prev < 0 || t.Sub(v[prev].Time) > time.Minute*5 {
+		vw := VWAP{t, price, volume, 1}
+		return append(v, vw)
+	}
+
+	l := v[prev]
+	l.Count++
+	l.Value += price
+	l.Volume += volume
+	v[prev] = l
+
+	return v
+}
 
 func (v VWAPS) Range(from, until time.Time) VWAPS {
 	min, max := 0, len(v)
@@ -51,8 +68,9 @@ func (v VWAPS) Range(from, until time.Time) VWAPS {
 func (v VWAPS) Value() float64 {
 	var n, vol float64
 	for _, v := range v {
-		n += v.Value * v.Volume
-		vol += v.Volume
+		value, volume := v.Value/v.Count, v.Volume/v.Count
+		n += value * volume
+		vol += volume
 	}
 	if vol == 0 {
 		return 0
@@ -284,14 +302,17 @@ func main() {
 		exit(err)
 	}()
 
-	vwap := make(VWAPS, 0)
 	var lastUpdate time.Time
 
 	tradePoints := make([]chart.EPoint, 0)
+
+	vwap := make(VWAPS, 0)
+	vwapPointsFull := make([]chart.EPoint, 0)
 	vwapPoints := make([]chart.EPoint, 0)
 	var lastVWAP time.Time
 	vwapInterval := time.Hour * 6
-	var value Value
+
+	var value, lastValue Value
 	start := time.Now()
 
 	type notification struct {
@@ -309,41 +330,50 @@ func main() {
 		}
 	}()
 
-	for {
-		change := false
-		select {
-		case trade := <-trades:
-			change = true
-			if trade.Date.After(start) {
-				results := alarms.Check(value.v, trade.Price)
-				for _, a := range results {
-					notifications <- notification{trade.Price, a}
-				}
-			}
-			value = Value{trade.Date, trade.Price}
-			vwap = append(vwap, VWAP{trade.Date, trade.Price, trade.Amount})
-			tradePoints = append(tradePoints, chart.EPoint{X: float64(trade.Date.Unix()), Y: trade.Price})
-			rounded := value.t.Truncate(vwapInterval)
-			if lastVWAP != rounded {
-				lastVWAP = rounded
-				v := vwap.Range(rounded.Add(-vwapInterval), rounded).Value()
-				if v != 0 {
-					vwapPoints = append(vwapPoints, chart.EPoint{X: float64(rounded.Unix()), Y: v})
-				}
-			}
+	var pingTime time.Time
+	var pingValue float64
 
-		case <-time.After(time.Second):
+	for {
+	sel:
+		for {
+			select {
+			case trade := <-trades:
+				if trade.Date.After(start) {
+					results := alarms.Check(value.v, trade.Price)
+					for _, a := range results {
+						notifications <- notification{trade.Price, a}
+					}
+				}
+				value = Value{trade.Date, trade.Price}
+				vwap = vwap.Add(trade.Date, trade.Price, trade.Amount)
+				tradePoints = append(tradePoints, chart.EPoint{X: float64(trade.Date.Unix()), Y: trade.Price})
+				rounded := value.t.Truncate(vwapInterval)
+				if lastVWAP != rounded {
+					lastVWAP = rounded
+					v := vwap.Range(rounded.Add(-vwapInterval), rounded).Value()
+					if v != 0 {
+						vwapPoints = append(vwapPoints, chart.EPoint{X: float64(rounded.Unix()), Y: v})
+					}
+				}
+
+				now := time.Now()
+				vwapPointsFull = append(vwapPoints, chart.EPoint{X: float64(now.Unix()), Y: vwap.Range(rounded, now).Value()})
+
+			case <-time.After(time.Millisecond * 200):
+				break sel
+			}
 		}
 
 		now := time.Now()
-		if now.Sub(lastUpdate) < time.Millisecond*500 {
+		if now.Sub(lastUpdate) < time.Millisecond*25 {
 			continue
 		}
+
 		lastUpdate = time.Now()
 
 		termX, termY := termSize()
 		if termX > 20 && termY > 8 && len(tradePoints) > 0 {
-			tgr := txtg.New(termX, termY-1)
+			tgr := txtg.New(termX, termY-2)
 			p := chart.ScatterChart{
 				Key:    chart.Key{Hide: true, Cols: 3, Pos: "otc", Border: -1},
 				YRange: chart.Range{},
@@ -356,19 +386,31 @@ func main() {
 				},
 			}
 
-			p.AddData("Trades", tradePoints, chart.PlotStylePoints, chart.Style{Symbol: 'o'})
-			p.AddData("VWAP", vwapPoints, chart.PlotStyleLines, chart.Style{Symbol: '.'})
-			p.AddData("Now", tradePoints[len(tradePoints)-1:], chart.PlotStylePoints, chart.Style{Symbol: 'x'})
+			const symbol4 = '█'
+			const symbol3 = '▓'
+			const symbol2 = '▒'
+			const symbol1 = '░'
+			p.AddData("VWAP", vwapPointsFull, chart.PlotStyleLines, chart.Style{Symbol: symbol1})
+			p.AddData("Trades", tradePoints, chart.PlotStylePoints, chart.Style{Symbol: symbol2})
+			p.AddData("Now", tradePoints[len(tradePoints)-1:], chart.PlotStylePoints, chart.Style{Symbol: symbol4})
 
 			p.Plot(tgr)
-			fmt.Print(tgr)
+			fmt.Println(tgr)
 		}
 
 		var prefix, suffix string
-		const bg = "\033[40m"
+		const bg = "\033[40;1m"
 		const rst = "\033[0m"
-		if change {
+		if lastValue.v != value.v {
+			pingValue = lastValue.v
+			pingTime = now
+		}
+
+		if pingValue != value.v && now.Sub(pingTime) < time.Second {
 			prefix, suffix = "\033[30;41m", rst
+			if value.v >= pingValue {
+				prefix = "\033[30;42m"
+			}
 		}
 		str1 := fmt.Sprintf(" %.2f ", value.v)
 		str2 := fmt.Sprintf(
@@ -382,5 +424,7 @@ func main() {
 		}
 
 		fmt.Print("\033[K", string(pad), bg, " ", prefix, str1, suffix, bg, str2, " ", rst, "\033[H")
+
+		lastValue = value
 	}
 }
