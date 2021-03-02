@@ -433,7 +433,7 @@ func main() {
 			vwap.Range(now.Add(-time.Hour), now).Value(),
 			vwap.Range(now.Add(-24*time.Hour), now).Value(),
 		)
-		pad := make([]byte, (termX-(len(str1)+len(str2)))/2)
+		pad := make([]byte, (termX-(len(str0)+len(str1)+len(str2)))/2)
 		for i := range pad {
 			pad[i] = ' '
 		}
