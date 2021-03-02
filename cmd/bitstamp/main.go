@@ -175,10 +175,13 @@ func main() {
 	var hours uint = 24
 	alarmsf := make(flagAlarms, 0)
 	var alarmCmd string
+	var baseCurrency, counterCurrency string
 	flag.StringVar(&configDir, "c", configDir, "config directory")
 	flag.UintVar(&hours, "h", hours, "[live] truncate graph after this amount of hours into the past")
 	flag.Var(&alarmsf, "a", "[live] set alarms (e.g. '>10000', '<8000')")
 	flag.StringVar(&alarmCmd, "e", "", "[live] command to execute when an alarm is triggered, %p will be replaced with the current market price and %a with the alarm condition")
+	flag.StringVar(&baseCurrency, "bc", bitstamp.BTC.String(), "base currency")
+	flag.StringVar(&counterCurrency, "cc", bitstamp.EUR.String(), "counter currency")
 
 	flag.Usage = func() {
 		out := os.Stdout
@@ -188,6 +191,7 @@ func main() {
 		fmt.Fprintln(out, "  balance | b:      get account balance")
 		fmt.Fprintln(out, "  transactions | t: list account transactions")
 		fmt.Fprintln(out, "  live | <empty>:   show market data")
+		fmt.Fprintln(out, "  list-currencies:  list known currency pairs")
 	}
 	flag.Parse()
 
@@ -285,9 +289,11 @@ func main() {
 					n.Type.String(),
 					strings.Join(strs, " | "),
 				)
-
 			}
-
+		case "list-currencies":
+			for _, p := range bitstamp.AllCurrencies() {
+				fmt.Println(p)
+			}
 		}
 
 		return
@@ -300,7 +306,11 @@ func main() {
 	trades := make(chan bitstamp.Trade, 1)
 
 	go func() {
-		err := client.TradesLive(api.TradesHistoryDay, bitstamp.BTCEUR(), trades)
+		err := client.TradesLive(
+			api.TradesHistoryDay,
+			generic.CurrencyPair{generic.Currency(baseCurrency), generic.Currency(counterCurrency)},
+			trades,
+		)
 		exit(err)
 	}()
 
@@ -373,6 +383,7 @@ func main() {
 
 		lastUpdate = time.Now()
 
+		fmt.Println("\033[2J")
 		termX, termY := termSize()
 		if termX > 20 && termY > 8 && len(tradePoints) > 0 {
 			tgr := txtg.New(termX, termY-2)
@@ -414,6 +425,7 @@ func main() {
 				prefix = "\033[30;42m"
 			}
 		}
+		str0 := fmt.Sprintf(" %s/%s ", baseCurrency, counterCurrency)
 		str1 := fmt.Sprintf(" %.2f ", value.v)
 		str2 := fmt.Sprintf(
 			" %.2f  %.2f ",
@@ -425,7 +437,7 @@ func main() {
 			pad[i] = ' '
 		}
 
-		fmt.Print("\033[K", string(pad), bg, " ", prefix, str1, suffix, bg, str2, " ", rst, "\033[H")
+		fmt.Print("\033[K", string(pad), bg, " ", str0, prefix, str1, suffix, bg, str2, " ", rst, "\033[H")
 
 		lastValue = value
 	}
