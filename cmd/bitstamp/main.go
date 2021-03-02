@@ -383,7 +383,10 @@ func main() {
 
 		lastUpdate = time.Now()
 
-		fmt.Println("\033[2J")
+		const clr = "\033[2J"
+		const bg = "\033[40;1m"
+		const rst = "\033[0m"
+
 		termX, termY := termSize()
 		if termX > 20 && termY > 8 && len(tradePoints) > 0 {
 			tgr := txtg.New(termX, termY-2)
@@ -408,12 +411,10 @@ func main() {
 			p.AddData("Now", tradePoints[len(tradePoints)-1:], chart.PlotStylePoints, chart.Style{Symbol: symbol4})
 
 			p.Plot(tgr)
-			fmt.Println(tgr)
+			fmt.Print(clr, tgr, "\n")
 		}
 
 		var prefix, suffix string
-		const bg = "\033[40;1m"
-		const rst = "\033[0m"
 		if lastValue.v != value.v {
 			pingValue = lastValue.v
 			pingTime = now
