@@ -86,7 +86,7 @@ type Alarm struct {
 
 func (a Alarm) Check(prev, current float64) bool {
 	return ((a.GT && current >= a.Value) || (!a.GT && current < a.Value)) &&
-		((a.GT && prev < a.Value) || (!a.GT && prev <= a.Value))
+		((a.GT && prev < a.Value) || (!a.GT && prev >= a.Value))
 }
 
 func (a Alarm) String() string {
