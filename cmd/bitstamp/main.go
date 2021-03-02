@@ -279,8 +279,10 @@ func main() {
 				}
 				strs = append(strs, fmt.Sprintf("FEE: %.2f", n.Fee))
 
-				fmt.Println(
+				fmt.Printf(
+					"%s %10s %s\n",
 					n.DateTime.Value().Local().Format(dateFormat),
+					n.Type.String(),
 					strings.Join(strs, " | "),
 				)
 

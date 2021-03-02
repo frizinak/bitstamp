@@ -21,6 +21,23 @@ func (t *TransactionType) UnmarshalJSON(d []byte) error {
 	return nil
 }
 
+func (t TransactionType) String() string {
+	switch t {
+	case Deposit:
+		return "deposit"
+	case Withdrawal:
+		return "withdrawal"
+	case MarketTrade:
+		return "trade"
+	case SubAccountTransfer:
+		return "sub account transfer"
+	case ReferralReward:
+		return "referral reward"
+	}
+
+	return "n/a"
+}
+
 const (
 	Deposit            TransactionType = 0
 	Withdrawal         TransactionType = 1
