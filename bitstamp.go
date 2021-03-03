@@ -130,6 +130,7 @@ type Trade struct {
 	Price  float64
 	Amount float64
 	Type   api.TradeType
+	Live   bool
 }
 
 func (b *Bitstamp) TradesLive(
@@ -151,6 +152,7 @@ func (b *Bitstamp) TradesLive(
 				Price:  d.Price.Value(),
 				Amount: d.Amount.Value(),
 				Type:   d.Type,
+				Live:   false,
 			}
 		}
 	}
@@ -181,6 +183,7 @@ func (b *Bitstamp) TradesLive(
 				Price:  d.Price.Value(),
 				Amount: d.Amount.Value(),
 				Type:   api.TradeType(d.Type.Value()),
+				Live:   true,
 			}
 		}
 	}
