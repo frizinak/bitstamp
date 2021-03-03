@@ -195,6 +195,7 @@ func main() {
 	}
 	flag.Parse()
 
+	pair := generic.CurrencyPair{generic.Currency(baseCurrency), generic.Currency(counterCurrency)}
 	notify := func(price float64, alarm Alarm) {}
 	if alarmCmd == "" && len(alarmsf) != 0 {
 		exit(errors.New("no alarm command set"))
@@ -308,7 +309,7 @@ func main() {
 	go func() {
 		err := client.TradesLive(
 			api.TradesHistoryDay,
-			generic.CurrencyPair{generic.Currency(baseCurrency), generic.Currency(counterCurrency)},
+			pair,
 			trades,
 		)
 		exit(err)

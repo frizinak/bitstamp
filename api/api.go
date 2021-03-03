@@ -1,6 +1,8 @@
 package api
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path"
@@ -60,4 +62,45 @@ func (api *API) Post(url string, body io.Reader) (*http.Response, error) {
 
 func (api *API) Get(url string, body io.Reader) (*http.Response, error) {
 	return api.makeDo("GET", url, body)
+}
+
+type Status struct {
+	Status string      `json:"status"`
+	Reason interface{} `json:"reason"`
+}
+
+var ErrUnknown = errors.New("unknown api error")
+
+func (s Status) Error() error {
+	if s.Status == "" {
+		return nil
+	}
+	if s.Reason == nil {
+		return ErrUnknown
+	}
+
+	switch v := s.Reason.(type) {
+	case map[string]interface{}:
+		_e, ok := v["__all__"]
+		if !ok {
+			return fmt.Errorf("%+v", v)
+		}
+
+		if e, ok := _e.(string); ok {
+			return errors.New(e)
+		}
+
+		if e, ok := _e.([]interface{}); ok && len(e) != 0 {
+			strs := make([]string, len(e))
+			for i := range e {
+				strs[i] = fmt.Sprintf("%v", e[i])
+			}
+
+			return errors.New(strings.Join(strs, ", "))
+		}
+
+		return fmt.Errorf("%+v", _e)
+	}
+
+	return fmt.Errorf("%+v", s.Reason)
 }
