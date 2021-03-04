@@ -372,7 +372,7 @@ func main() {
 				now := time.Now()
 				vwapPointsFull = append(vwapPoints, chart.EPoint{X: float64(now.Unix()), Y: vwap.Range(rounded, now).Value()})
 
-			case <-time.After(time.Millisecond * 200):
+			case <-time.After(time.Second):
 				break sel
 			}
 		}
