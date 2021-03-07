@@ -222,26 +222,26 @@ func main() {
 		}
 	}
 
-	if configDir == "" {
-		exit(errors.New("please set a config directory"))
-	}
-
-	authFile := filepath.Join(configDir, "auth")
-	f, err := os.Open(authFile)
-	exit(err)
-	authBin, err := io.ReadAll(f)
-	exit(err)
-
-	lines := strings.Split(strings.TrimSpace(string(authBin)), "\n")
-	if len(lines) < 2 {
-		exit(errors.New("auth file invalid"))
-	}
-	apiKey, apiSecret := lines[0], lines[1]
-	client, err := bitstamp.NewDefaults(apiKey, apiSecret)
-	exit(err)
-
 	cmd := flag.Arg(0)
 	if cmd != "" && cmd != "live" {
+		if configDir == "" {
+			exit(errors.New("please set a config directory"))
+		}
+
+		authFile := filepath.Join(configDir, "auth")
+		f, err := os.Open(authFile)
+		exit(err)
+		authBin, err := io.ReadAll(f)
+		exit(err)
+
+		lines := strings.Split(strings.TrimSpace(string(authBin)), "\n")
+		if len(lines) < 2 {
+			exit(errors.New("auth file invalid"))
+		}
+		apiKey, apiSecret := lines[0], lines[1]
+		client, err := bitstamp.NewDefaults(apiKey, apiSecret)
+		exit(err)
+
 		switch cmd {
 		case "b", "balance":
 			r, err := client.API.Balance()
@@ -306,6 +306,8 @@ func main() {
 	}
 	trades := make(chan bitstamp.Trade, 1)
 
+	client, err := bitstamp.NewDefaults("", "")
+	exit(err)
 	go func() {
 		err := client.TradesLive(
 			api.TradesHistoryDay,
