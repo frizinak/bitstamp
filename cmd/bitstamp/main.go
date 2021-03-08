@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -176,8 +177,10 @@ func main() {
 	alarmsf := make(flagAlarms, 0)
 	var alarmCmd string
 	var baseCurrency, counterCurrency string
+	var nograph bool
 	flag.StringVar(&configDir, "c", configDir, "config directory")
 	flag.UintVar(&hours, "h", hours, "[live] truncate graph after this amount of hours into the past")
+	flag.BoolVar(&nograph, "g", false, "[live] hide graph")
 	flag.Var(&alarmsf, "a", "[live] set alarms (e.g. '>10000', '<8000')")
 	flag.StringVar(&alarmCmd, "e", "", "[live] command to execute when an alarm is triggered, %p will be replaced with the current market price and %a with the alarm condition")
 	flag.StringVar(&baseCurrency, "bc", bitstamp.BTC.String(), "base currency")
@@ -347,6 +350,16 @@ func main() {
 
 	var pingTime time.Time
 	var pingValue float64
+	buf := bytes.NewBuffer(make([]byte, 1024*180))
+
+	const clr = "\033[2J"
+	const clrLine = "\033[K"
+	const cursorHome = "\033[H"
+	const cursorBOL = "\033[0G"
+	const bg = "\033[40;1m"
+	const rst = "\033[0m"
+	const clrGreen = "\033[30;41m"
+	const clrRed = "\033[30;42m"
 
 	for {
 	sel:
@@ -386,12 +399,9 @@ func main() {
 
 		lastUpdate = time.Now()
 
-		const clr = "\033[2J"
-		const bg = "\033[40;1m"
-		const rst = "\033[0m"
-
 		termX, termY := termSize()
-		if termX > 20 && termY > 8 && len(tradePoints) > 0 {
+		out := cursorBOL
+		if termX > 20 && termY > 8 && len(tradePoints) > 0 && !nograph {
 			tgr := txtg.New(termX, termY-2)
 			p := chart.ScatterChart{
 				Key:    chart.Key{Hide: true, Cols: 3, Pos: "otc", Border: -1},
@@ -414,8 +424,10 @@ func main() {
 			p.AddData("Now", tradePoints[len(tradePoints)-1:], chart.PlotStylePoints, chart.Style{Symbol: symbol4})
 
 			p.Plot(tgr)
-			fmt.Print(clr, tgr, "\n")
+			out = fmt.Sprintf("%s%s\n", clr, tgr)
 		}
+
+		buf.WriteString(out)
 
 		var prefix, suffix string
 		if lastValue.v != value.v {
@@ -424,9 +436,9 @@ func main() {
 		}
 
 		if pingValue != value.v && now.Sub(pingTime) < time.Second {
-			prefix, suffix = "\033[30;41m", rst
+			prefix, suffix = clrRed, rst
 			if value.v >= pingValue {
-				prefix = "\033[30;42m"
+				prefix = clrGreen
 			}
 		}
 		str0 := fmt.Sprintf(" %s/%s ", baseCurrency, counterCurrency)
@@ -441,8 +453,15 @@ func main() {
 			pad[i] = ' '
 		}
 
-		fmt.Print("\033[K", string(pad), bg, " ", str0, prefix, str1, suffix, bg, str2, " ", rst, "\033[H")
+		fmt.Fprint(buf, clrLine, string(pad), bg, " ", str0, prefix, str1, suffix, bg, str2, " ", rst)
+		cursor := cursorHome
+		if nograph {
+			cursor = cursorBOL
+		}
+		fmt.Fprint(buf, cursor)
 
 		lastValue = value
+
+		io.Copy(os.Stdout, buf)
 	}
 }
