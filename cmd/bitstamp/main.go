@@ -23,7 +23,17 @@ import (
 	"github.com/vdobler/chart/txtg"
 )
 
-var dateFormat = "2006-01-02 15:04:05"
+const dateFormat = "2006-01-02 15:04:05"
+
+type action byte
+
+const (
+	actionLive action = iota
+	actionCurrent
+	actionBalance
+	actionTransactions
+	actionCurrencies
+)
 
 type VWAP struct {
 	Time   time.Time
@@ -167,49 +177,17 @@ func exit(err error) {
 	os.Exit(1)
 }
 
-func main() {
-	configDir, _ := os.UserConfigDir()
-	if configDir != "" {
-		configDir = filepath.Join(configDir, "bitstamp")
-	}
-
-	var hours uint = 24
-	alarmsf := make(flagAlarms, 0)
-	var alarmCmd string
-	var baseCurrency, counterCurrency string
-	var nograph bool
-	flag.StringVar(&configDir, "c", configDir, "config directory")
-	flag.UintVar(&hours, "h", hours, "[live] truncate graph after this amount of hours into the past")
-	flag.BoolVar(&nograph, "g", false, "[live] hide graph")
-	flag.Var(&alarmsf, "a", "[live] set alarms (e.g. '>10000', '<8000')")
-	flag.StringVar(&alarmCmd, "e", "", "[live] command to execute when an alarm is triggered, %p will be replaced with the current market price and %a with the alarm condition")
-	flag.StringVar(&baseCurrency, "bc", bitstamp.BTC.String(), "base currency")
-	flag.StringVar(&counterCurrency, "cc", bitstamp.EUR.String(), "counter currency")
-
-	flag.Usage = func() {
-		out := os.Stdout
-		fmt.Fprintf(out, "Usage of %s:\n", os.Args[0])
-		flag.PrintDefaults()
-		fmt.Fprintln(out, "Commands:")
-		fmt.Fprintln(out, "  balance | b:      get account balance")
-		fmt.Fprintln(out, "  transactions | t: list account transactions")
-		fmt.Fprintln(out, "  live | <empty>:   show market data")
-		fmt.Fprintln(out, "  list-currencies:  list known currency pairs")
-	}
-	flag.Parse()
-
-	pair := generic.CurrencyPair{generic.Currency(baseCurrency), generic.Currency(counterCurrency)}
+func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph bool, hours uint) error {
 	notify := func(price float64, alarm Alarm) {}
-	if alarmCmd == "" && len(alarmsf) != 0 {
-		exit(errors.New("no alarm command set"))
+	if alarmCmd == "" && len(alarms) != 0 {
+		return errors.New("no alarm command set")
 	}
-
-	alarms, err := alarmsf.Parse()
-	exit(err)
 
 	if alarmCmd != "" {
 		cmd, err := shlex.Split(alarmCmd)
-		exit(err)
+		if err != nil {
+			return err
+		}
 		notify = func(price float64, alarm Alarm) {
 			rcmd := make([]string, len(cmd))
 			copy(rcmd, cmd)
@@ -224,85 +202,6 @@ func main() {
 			cmd.Run()
 		}
 	}
-
-	cmd := flag.Arg(0)
-	if cmd != "" && cmd != "live" {
-		if configDir == "" {
-			exit(errors.New("please set a config directory"))
-		}
-
-		authFile := filepath.Join(configDir, "auth")
-		f, err := os.Open(authFile)
-		exit(err)
-		authBin, err := io.ReadAll(f)
-		exit(err)
-
-		lines := strings.Split(strings.TrimSpace(string(authBin)), "\n")
-		if len(lines) < 2 {
-			exit(errors.New("auth file invalid"))
-		}
-		apiKey, apiSecret := lines[0], lines[1]
-		client, err := bitstamp.NewDefaults(apiKey, apiSecret)
-		exit(err)
-
-		switch cmd {
-		case "b", "balance":
-			r, err := client.API.Balance()
-			exit(err)
-			for _, v := range bitstamp.AllCurrencies() {
-				l := r.ForCurrency(v)
-				if len(l) == 0 || l["balance"] == 0 {
-					continue
-				}
-				p := bitstamp.Precision(v)
-				f := fmt.Sprintf("%%s: %%10.%df / %%10.%df\n", p, p)
-				fmt.Printf(f, v, l["available"], l["balance"])
-			}
-		case "t", "transactions":
-			list, err := client.Transactions()
-			exit(err)
-			type item struct {
-				currency generic.Currency
-				value    float64
-			}
-
-			for _, n := range list {
-				items := make([]item, 0, 10)
-				for k, v := range n.Values {
-					if v == 0 {
-						continue
-					}
-					items = append(items, item{k, v})
-				}
-
-				sort.Slice(items, func(i, j int) bool {
-					return items[i].currency < items[j].currency
-				})
-
-				strs := make([]string, len(items), len(items)+1)
-				for i, it := range items {
-					p := bitstamp.Precision(it.currency)
-					f := fmt.Sprintf("%%s: %%.%df", p)
-					strs[i] = fmt.Sprintf(f, it.currency, it.value)
-				}
-				strs = append(strs, fmt.Sprintf("FEE: %.2f", n.Fee))
-
-				fmt.Printf(
-					"%s %10s %s\n",
-					n.DateTime.Value().Local().Format(dateFormat),
-					n.Type.String(),
-					strings.Join(strs, " | "),
-				)
-			}
-		case "list-currencies":
-			for _, p := range bitstamp.AllCurrencies() {
-				fmt.Println(p)
-			}
-		}
-
-		return
-	}
-
 	type Value struct {
 		t time.Time
 		v float64
@@ -310,14 +209,16 @@ func main() {
 	trades := make(chan bitstamp.Trade, 1)
 
 	client, err := bitstamp.NewDefaults("", "")
-	exit(err)
+	if err != nil {
+		return err
+	}
+	errs := make(chan error, 1)
 	go func() {
-		err := client.TradesLive(
+		errs <- client.TradesLive(
 			api.TradesHistoryDay,
 			pair,
 			trades,
 		)
-		exit(err)
 	}()
 
 	var lastUpdate time.Time
@@ -365,6 +266,8 @@ func main() {
 	sel:
 		for {
 			select {
+			case err := <-errs:
+				return err
 			case trade := <-trades:
 				if trade.Date.After(start) {
 					results := alarms.Check(value.v, trade.Price)
@@ -441,7 +344,7 @@ func main() {
 				prefix = clrGreen
 			}
 		}
-		str0 := fmt.Sprintf(" %s/%s ", baseCurrency, counterCurrency)
+		str0 := fmt.Sprintf(" %s/%s ", pair.Base, pair.Counter)
 		str1 := fmt.Sprintf(" %.2f ", value.v)
 		str2 := fmt.Sprintf(
 			" %.2f  %.2f ",
@@ -463,5 +366,151 @@ func main() {
 		lastValue = value
 
 		io.Copy(os.Stdout, buf)
+	}
+}
+
+func main() {
+	configDir, _ := os.UserConfigDir()
+	if configDir != "" {
+		configDir = filepath.Join(configDir, "bitstamp")
+	}
+
+	var hours uint = 24
+	alarmsf := make(flagAlarms, 0)
+	var alarmCmd string
+	var baseCurrency, counterCurrency string
+	var nograph bool
+	flag.StringVar(&configDir, "c", configDir, "config directory")
+	flag.UintVar(&hours, "h", hours, "[live] truncate graph after this amount of hours into the past")
+	flag.BoolVar(&nograph, "g", false, "[live] hide graph")
+	flag.Var(&alarmsf, "a", "[live] set alarms (e.g. '>10000', '<8000')")
+	flag.StringVar(&alarmCmd, "e", "", "[live] command to execute when an alarm is triggered, %p will be replaced with the current market price and %a with the alarm condition")
+	flag.StringVar(&baseCurrency, "bc", bitstamp.BTC.String(), "base currency")
+	flag.StringVar(&counterCurrency, "cc", bitstamp.EUR.String(), "counter currency")
+
+	flag.Usage = func() {
+		out := os.Stdout
+		fmt.Fprintf(out, "Usage of %s:\n", os.Args[0])
+		flag.PrintDefaults()
+		fmt.Fprintln(out, "Commands:")
+		fmt.Fprintln(out, "  live | <empty>:   show market data")
+		fmt.Fprintln(out, "  current | c:      show current price")
+		fmt.Fprintln(out, "  balance | b:      get account balance")
+		fmt.Fprintln(out, "  transactions | t: list account transactions")
+		fmt.Fprintln(out, "  list-currencies:  list known currency pairs")
+	}
+	flag.Parse()
+
+	pair := generic.CurrencyPair{generic.Currency(baseCurrency), generic.Currency(counterCurrency)}
+
+	cmd := flag.Arg(0)
+	var a action
+	var authed bool
+	switch cmd {
+	case "", "live":
+		a = actionLive
+	case "b", "balance":
+		a = actionBalance
+		authed = true
+	case "t", "transactions":
+		a = actionTransactions
+		authed = true
+	case "list-currencies":
+		a = actionCurrencies
+	case "c", "current":
+		a = actionCurrent
+	}
+
+	var apiKey, apiSecret string
+	if authed {
+		if configDir == "" {
+			exit(errors.New("please set a config directory"))
+		}
+
+		authFile := filepath.Join(configDir, "auth")
+		f, err := os.Open(authFile)
+		exit(err)
+		authBin, err := io.ReadAll(f)
+		exit(err)
+
+		lines := strings.Split(strings.TrimSpace(string(authBin)), "\n")
+		if len(lines) < 2 {
+			exit(errors.New("auth file invalid"))
+		}
+		apiKey, apiSecret = lines[0], lines[1]
+	}
+
+	client, err := bitstamp.NewDefaults(apiKey, apiSecret)
+	exit(err)
+
+	switch a {
+	case actionBalance:
+		r, err := client.API.Balance()
+		exit(err)
+		for _, v := range bitstamp.AllCurrencies() {
+			l := r.ForCurrency(v)
+			if len(l) == 0 || l["balance"] == 0 {
+				continue
+			}
+			p := bitstamp.Precision(v)
+			f := fmt.Sprintf("%%s: %%10.%df / %%10.%df\n", p, p)
+			fmt.Printf(f, v, l["available"], l["balance"])
+		}
+	case actionTransactions:
+		list, err := client.Transactions()
+		exit(err)
+		type item struct {
+			currency generic.Currency
+			value    float64
+		}
+
+		for _, n := range list {
+			items := make([]item, 0, 10)
+			for k, v := range n.Values {
+				if v == 0 {
+					continue
+				}
+				items = append(items, item{k, v})
+			}
+
+			sort.Slice(items, func(i, j int) bool {
+				return items[i].currency < items[j].currency
+			})
+
+			strs := make([]string, len(items), len(items)+1)
+			for i, it := range items {
+				p := bitstamp.Precision(it.currency)
+				f := fmt.Sprintf("%%s: %%.%df", p)
+				strs[i] = fmt.Sprintf(f, it.currency, it.value)
+			}
+			strs = append(strs, fmt.Sprintf("FEE: %.2f", n.Fee))
+
+			fmt.Printf(
+				"%s %10s %s\n",
+				n.DateTime.Value().Local().Format(dateFormat),
+				n.Type.String(),
+				strings.Join(strs, " | "),
+			)
+		}
+	case actionCurrencies:
+		for _, p := range bitstamp.AllCurrencies() {
+			fmt.Println(p)
+		}
+	case actionLive:
+		alarms, err := alarmsf.Parse()
+		exit(err)
+		exit(live(pair, alarmCmd, alarms, nograph, hours))
+	case actionCurrent:
+		r, err := client.API.Ticker(pair, api.TickerHourly)
+		exit(err)
+		f := fmt.Sprintf("%%.%df", bitstamp.Precision(pair.Counter))
+		fmt.Printf(
+			"%s\nLast:\t"+f+"\nLow:\t"+f+"\nHigh:\t"+f+"\nVWAP:\t"+f+"\n",
+			r.Time.Value().Local(),
+			r.Last,
+			r.Low,
+			r.High,
+			r.VWAP,
+		)
 	}
 }
