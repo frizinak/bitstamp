@@ -8,11 +8,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/frizinak/bitstamp"
@@ -177,7 +179,7 @@ func exit(err error) {
 	os.Exit(1)
 }
 
-func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph bool, hours uint) error {
+func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph bool, truncate time.Duration) error {
 	notify := func(price float64, alarm Alarm) {}
 	if alarmCmd == "" && len(alarms) != 0 {
 		return errors.New("no alarm command set")
@@ -221,8 +223,6 @@ func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph boo
 		)
 	}()
 
-	var lastUpdate time.Time
-
 	tradePoints := make([]chart.EPoint, 0)
 
 	vwap := make(VWAPS, 0)
@@ -232,7 +232,6 @@ func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph boo
 	vwapInterval := time.Hour * 6
 
 	var value, lastValue Value
-	start := time.Now()
 
 	type notification struct {
 		price float64
@@ -249,6 +248,13 @@ func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph boo
 		}
 	}()
 
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	go func() {
+		<-sig
+		errs <- nil
+	}()
+
 	var pingTime time.Time
 	var pingValue float64
 	buf := bytes.NewBuffer(make([]byte, 1024*180))
@@ -262,19 +268,26 @@ func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph boo
 	const clrGreen = "\033[30;41m"
 	const clrRed = "\033[30;42m"
 
+	ignoreBefore := time.Now().Add(-truncate)
+	lastUpdate := time.Now()
+	refreshRate := time.Millisecond * 25
 	for {
 	sel:
 		for {
 			select {
 			case err := <-errs:
+				os.Stdout.WriteString(clr)
 				return err
 			case trade := <-trades:
-				if trade.Date.After(start) {
+				if trade.Live {
 					results := alarms.Check(value.v, trade.Price)
 					for _, a := range results {
 						notifications <- notification{trade.Price, a}
 					}
+				} else if trade.Date.Before(ignoreBefore) {
+					continue
 				}
+
 				value = Value{trade.Date, trade.Price}
 				vwap = vwap.Add(trade.Date, trade.Price, trade.Amount)
 				tradePoints = append(tradePoints, chart.EPoint{X: float64(trade.Date.Unix()), Y: trade.Price})
@@ -289,22 +302,22 @@ func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph boo
 
 				now := time.Now()
 				vwapPointsFull = append(vwapPoints, chart.EPoint{X: float64(now.Unix()), Y: vwap.Range(rounded, now).Value()})
-
-			case <-time.After(time.Second):
+				since := time.Since(lastUpdate)
+				refreshRate = time.Second
+				if trade.Live && since > time.Millisecond*25 {
+					break sel
+				}
+			case <-time.After(refreshRate):
 				break sel
 			}
 		}
 
 		now := time.Now()
-		if now.Sub(lastUpdate) < time.Millisecond*25 {
-			continue
-		}
-
-		lastUpdate = time.Now()
+		lastUpdate = now
 
 		termX, termY := termSize()
 		out := cursorBOL
-		if termX > 20 && termY > 8 && len(tradePoints) > 0 && !nograph {
+		if termX > 20 && termY > 8 && !nograph {
 			tgr := txtg.New(termX, termY-2)
 			p := chart.ScatterChart{
 				Key:    chart.Key{Hide: true, Cols: 3, Pos: "otc", Border: -1},
@@ -313,7 +326,7 @@ func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph boo
 					Time: true,
 					MinMode: chart.RangeMode{
 						Fixed:  true,
-						TValue: time.Now().Add(-time.Duration(hours) * time.Hour),
+						TValue: now.Add(-truncate),
 					},
 				},
 			}
@@ -322,9 +335,11 @@ func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph boo
 			const symbol3 = '▓'
 			const symbol2 = '▒'
 			const symbol1 = '░'
-			p.AddData("VWAP", vwapPointsFull, chart.PlotStyleLines, chart.Style{Symbol: symbol1})
-			p.AddData("Trades", tradePoints, chart.PlotStylePoints, chart.Style{Symbol: symbol2})
-			p.AddData("Now", tradePoints[len(tradePoints)-1:], chart.PlotStylePoints, chart.Style{Symbol: symbol4})
+			if len(tradePoints) > 0 {
+				p.AddData("VWAP", vwapPointsFull, chart.PlotStyleLines, chart.Style{Symbol: symbol1})
+				p.AddData("Trades", tradePoints, chart.PlotStylePoints, chart.Style{Symbol: symbol2})
+				p.AddData("Now", tradePoints[len(tradePoints)-1:], chart.PlotStylePoints, chart.Style{Symbol: symbol4})
+			}
 
 			p.Plot(tgr)
 			out = fmt.Sprintf("%s%s\n", clr, tgr)
@@ -375,13 +390,13 @@ func main() {
 		configDir = filepath.Join(configDir, "bitstamp")
 	}
 
-	var hours uint = 24
+	truncate := time.Hour * 24
 	alarmsf := make(flagAlarms, 0)
 	var alarmCmd string
 	var baseCurrency, counterCurrency string
 	var nograph bool
 	flag.StringVar(&configDir, "c", configDir, "config directory")
-	flag.UintVar(&hours, "h", hours, "[live] truncate graph after this amount of hours into the past")
+	flag.DurationVar(&truncate, "h", truncate, "[live] truncate graph after this duration into the past")
 	flag.BoolVar(&nograph, "g", false, "[live] hide graph")
 	flag.Var(&alarmsf, "a", "[live] set alarms (e.g. '>10000', '<8000')")
 	flag.StringVar(&alarmCmd, "e", "", "[live] command to execute when an alarm is triggered, %p will be replaced with the current market price and %a with the alarm condition")
@@ -499,7 +514,7 @@ func main() {
 	case actionLive:
 		alarms, err := alarmsf.Parse()
 		exit(err)
-		exit(live(pair, alarmCmd, alarms, nograph, hours))
+		exit(live(pair, alarmCmd, alarms, nograph, truncate))
 	case actionCurrent:
 		r, err := client.API.Ticker(pair, api.TickerHourly)
 		exit(err)
