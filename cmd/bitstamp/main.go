@@ -259,6 +259,8 @@ func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph boo
 	var pingValue float64
 	buf := bytes.NewBuffer(make([]byte, 1024*180))
 
+	const cursorHide = "\033[?25l"
+	const cursorShow = "\033[?25h"
 	const clr = "\033[2J"
 	const clrLine = "\033[K"
 	const cursorHome = "\033[H"
@@ -268,6 +270,7 @@ func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph boo
 	const clrGreen = "\033[30;41m"
 	const clrRed = "\033[30;42m"
 
+	os.Stdout.WriteString(cursorHide)
 	ignoreBefore := time.Now().Add(-truncate)
 	lastUpdate := time.Now()
 	refreshRate := time.Millisecond * 25
@@ -277,6 +280,7 @@ func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph boo
 			select {
 			case err := <-errs:
 				os.Stdout.WriteString(clr)
+				os.Stdout.WriteString(cursorShow)
 				return err
 			case trade := <-trades:
 				if trade.Live {
@@ -316,8 +320,38 @@ func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph boo
 		lastUpdate = now
 
 		termX, termY := termSize()
-		out := cursorBOL
-		if termX > 20 && termY > 8 && !nograph {
+
+		var prefix, suffix string
+		if lastValue.v != value.v {
+			pingValue = lastValue.v
+			pingTime = now
+		}
+
+		if pingValue != value.v && now.Sub(pingTime) < time.Second {
+			prefix, suffix = clrRed, rst
+			if value.v >= pingValue {
+				prefix = clrGreen
+			}
+		}
+		str0 := fmt.Sprintf(" %s/%s ", pair.Base, pair.Counter)
+		str1 := fmt.Sprintf(" %.2f ", value.v)
+		str2 := fmt.Sprintf(
+			" %.2f  %.2f ",
+			vwap.Range(now.Add(-time.Hour), now).Value(),
+			vwap.Range(now.Add(-24*time.Hour), now).Value(),
+		)
+
+		if len(str0)+len(str1)+len(str2)+2 >= termX {
+			str0, str2 = "", ""
+		}
+
+		pad := make([]byte, (termX-(len(str0)+len(str1)+len(str2)))/2)
+		for i := range pad {
+			pad[i] = ' '
+		}
+
+		out := clr
+		if termX > 30 && termY > 8 && !nograph {
 			tgr := txtg.New(termX, termY-2)
 			p := chart.ScatterChart{
 				Key:    chart.Key{Hide: true, Cols: 3, Pos: "otc", Border: -1},
@@ -346,30 +380,6 @@ func live(pair generic.CurrencyPair, alarmCmd string, alarms Alarms, nograph boo
 		}
 
 		buf.WriteString(out)
-
-		var prefix, suffix string
-		if lastValue.v != value.v {
-			pingValue = lastValue.v
-			pingTime = now
-		}
-
-		if pingValue != value.v && now.Sub(pingTime) < time.Second {
-			prefix, suffix = clrRed, rst
-			if value.v >= pingValue {
-				prefix = clrGreen
-			}
-		}
-		str0 := fmt.Sprintf(" %s/%s ", pair.Base, pair.Counter)
-		str1 := fmt.Sprintf(" %.2f ", value.v)
-		str2 := fmt.Sprintf(
-			" %.2f  %.2f ",
-			vwap.Range(now.Add(-time.Hour), now).Value(),
-			vwap.Range(now.Add(-24*time.Hour), now).Value(),
-		)
-		pad := make([]byte, (termX-(len(str0)+len(str1)+len(str2)))/2)
-		for i := range pad {
-			pad[i] = ' '
-		}
 
 		fmt.Fprint(buf, clrLine, string(pad), bg, " ", str0, prefix, str1, suffix, bg, str2, " ", rst)
 		cursor := cursorHome
